@@ -1,3 +1,4 @@
-aiogram==3.3.0
-aiohttp
-python-dotenv
+aiogram~=3.21
+aiohttp~=3.12
+apscheduler~=3.9
+python-dotenv~=1.0
