@@ -420,7 +420,7 @@ def get_admin_keyboard():
             [KeyboardButton(text="🗑️ Расформировать сквад")],
             [KeyboardButton(text="👤 Добавить сопровождающего"), KeyboardButton(text="🗑️ Удалить сопровождающего")],
             [KeyboardButton(text="💰 Балансы сопровождающих"), KeyboardButton(text="💸 Начислить")],
-            [KeyboardButton(text="📊 Статистика"), KeyboardButton(text="📝 Добавить заказ")],
+            [KeyboardButton(text="📝 Добавить заказ")],
             [KeyboardButton(text="🚫 Бан навсегда"), KeyboardButton(text="⏰ Бан на время")],
             [KeyboardButton(text="⛔ Ограничить"), KeyboardButton(text="👥 Пользователи")],
             [KeyboardButton(text="💰 Обнулить баланс"), KeyboardButton(text="📊 Все балансы")],
@@ -1315,7 +1315,7 @@ async def complete_order_callback(callback: types.CallbackQuery):
         async with aiosqlite.connect(DB_PATH) as conn:
             cursor = await conn.execute(
                 "SELECT id, status FROM orders WHERE memo_order_id = ?",
-                (order_id,),
+                (order_id,)
             )
             order = await cursor.fetchone()
             if not order:
@@ -1334,7 +1334,7 @@ async def complete_order_callback(callback: types.CallbackQuery):
                 '''
                 UPDATE orders SET status = 'completed', completed_at = ?
                 WHERE id = ?
-                ''', (datetime.now().isoformat(), order_db_id),
+                ''', (datetime.now().isoformat(), order_db_id)
             )
             await conn.commit()
         await callback.message.edit_text(
@@ -1554,9 +1554,7 @@ async def list_squads(message: types.Message):
             )
         await message.answer(response, reply_markup=get_admin_keyboard())
     except Exception as e:
-        logger.error(f"Ошибка await message.answer(response, reply_markup=get_admin_keyboard())
-    except Exception as e:
-        logger.error(f"Ошибка в list_squads для {message.from_user.id}: {e}")
+        logger.error(f"Ошибка в list_squads для user_id {message.from_user.id}: {e}")
         await message.answer(MESSAGES["error"], reply_markup=get_admin_keyboard())
 
 @dp.message(F.text == "👤 Добавить сопровождающего")
