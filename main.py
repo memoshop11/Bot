@@ -6,7 +6,7 @@ import traceback
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.filters.text import Text  # Обновленный импорт для aiogram 3.x
+from aiogram.filters.text import Text  # Правильный импорт для aiogram 3.x
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton
@@ -14,6 +14,7 @@ from aiogram.utils.keyboard import ReplyKeyboardBuilder
 from aiogram.exceptions import TelegramAPIError, RetryAfter
 from dotenv import load_dotenv
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+import csv
 
 # Настройка логирования
 logging.basicConfig(
@@ -26,7 +27,11 @@ logger = logging.getLogger()
 # Загрузка конфигурации
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
+try:
+    ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
+except ValueError:
+    logger.error("Ошибка: ADMIN_IDS содержит нечисловые значения")
+    raise ValueError("ADMIN_IDS содержит нечисловые значения")
 DB_PATH = "database.db"
 
 if not BOT_TOKEN or not ADMIN_IDS:
@@ -83,6 +88,7 @@ MESSAGES = {
 async def init_db():
     try:
         async with aiosqlite.connect(DB_PATH) as conn:
+            await conn.execute("PRAGMA foreign_keys = ON;")  # Включение foreign keys
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS squads (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -181,7 +187,7 @@ async def check_access(message: types.Message) -> bool:
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
-# Главная админ-клавиатура (группы, размер 1)
+# Главная админ-клавиатура
 def get_admin_keyboard():
     builder = ReplyKeyboardBuilder()
     buttons = [
@@ -195,19 +201,19 @@ def get_admin_keyboard():
     ]
     for button in buttons:
         builder.add(types.KeyboardButton(text=button))
-    builder.adjust(1)  # Одна кнопка в строке
+    builder.adjust(1)
     return builder.as_markup(resize_keyboard=True)
 
-# Клавиатура для группы "Заказы" (размер 0.5)
+# Клавиатура для группы "Заказы"
 def get_orders_keyboard():
     builder = ReplyKeyboardBuilder()
     buttons = ["📝 Добавить заказ", "🔙 Назад"]
     for button in buttons:
         builder.add(types.KeyboardButton(text=button))
-    builder.adjust(2)  # Две кнопки в строке
+    builder.adjust(2)
     return builder.as_markup(resize_keyboard=True)
 
-# Клавиатура для группы "Сквады" (размер 0.5)
+# Клавиатура для группы "Сквады"
 def get_squads_keyboard():
     builder = ReplyKeyboardBuilder()
     buttons = [
@@ -218,10 +224,10 @@ def get_squads_keyboard():
     ]
     for button in buttons:
         builder.add(types.KeyboardButton(text=button))
-    builder.adjust(2)  # Две кнопки в строке
+    builder.adjust(2)
     return builder.as_markup(resize_keyboard=True)
 
-# Клавиатура для группы "Сопровождающие" (размер 0.5)
+# Клавиатура для группы "Сопровождающие"
 def get_escorts_keyboard():
     builder = ReplyKeyboardBuilder()
     buttons = [
@@ -232,10 +238,10 @@ def get_escorts_keyboard():
     ]
     for button in buttons:
         builder.add(types.KeyboardButton(text=button))
-    builder.adjust(2)  # Две кнопки в строке
+    builder.adjust(2)
     return builder.as_markup(resize_keyboard=True)
 
-# Клавиатура для группы "Бан/ограничение" (размер 0.5)
+# Клавиатура для группы "Бан/ограничение"
 def get_ban_restrict_keyboard():
     builder = ReplyKeyboardBuilder()
     buttons = [
@@ -248,10 +254,10 @@ def get_ban_restrict_keyboard():
     ]
     for button in buttons:
         builder.add(types.KeyboardButton(text=button))
-    builder.adjust(2)  # Две кнопки в строке
+    builder.adjust(2)
     return builder.as_markup(resize_keyboard=True)
 
-# Клавиатура для группы "Балансы" (размер 0.5)
+# Клавиатура для группы "Балансы"
 def get_balances_keyboard():
     builder = ReplyKeyboardBuilder()
     buttons = [
@@ -262,10 +268,10 @@ def get_balances_keyboard():
     ]
     for button in buttons:
         builder.add(types.KeyboardButton(text=button))
-    builder.adjust(2)  # Две кнопки в строке
+    builder.adjust(2)
     return builder.as_markup(resize_keyboard=True)
 
-# Клавиатура для группы "Отчеты/справка" (размер 0.5)
+# Клавиатура для группы "Отчеты/справка"
 def get_reports_keyboard():
     builder = ReplyKeyboardBuilder()
     buttons = [
@@ -277,7 +283,7 @@ def get_reports_keyboard():
     ]
     for button in buttons:
         builder.add(types.KeyboardButton(text=button))
-    builder.adjust(2)  # Две кнопки в строке
+    builder.adjust(2)
     return builder.as_markup(resize_keyboard=True)
 
 # Клавиатура отмены
@@ -325,27 +331,30 @@ async def log_action(action_type: str, user_id: int, order_id: str | None, descr
 
 # Уведомление админов
 async def notify_admins(message: str, reply_to_user_id: int | None = None):
+    tasks = []
     for admin_id in ADMIN_IDS:
         if reply_to_user_id:
             markup = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="Ответить", callback_data=f"reply_{reply_to_user_id}")]
             ])
-            await safe_send_message(admin_id, message, reply_markup=markup)
+            tasks.append(safe_send_message(admin_id, message, reply_markup=markup))
         else:
-            await safe_send_message(admin_id, message)
+            tasks.append(safe_send_message(admin_id, message))
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 # Уведомление сквада
 async def notify_squad(squad_id: int | None, message: str):
-    if squad_id is None:
+    try:
         async with aiosqlite.connect(DB_PATH) as conn:
-            cursor = await conn.execute("SELECT telegram_id FROM escorts")
+            query = "SELECT telegram_id FROM escorts" if squad_id is None else \
+                    "SELECT telegram_id FROM escorts WHERE squad_id = ?"
+            params = () if squad_id is None else (squad_id,)
+            cursor = await conn.execute(query, params)
             escorts = await cursor.fetchall()
-    else:
-        async with aiosqlite.connect(DB_PATH) as conn:
-            cursor = await conn.execute("SELECT telegram_id FROM escorts WHERE squad_id = ?", (squad_id,))
-            escorts = await cursor.fetchall()
-    for (telegram_id,) in escorts:
-        await safe_send_message(telegram_id, message)
+        tasks = [safe_send_message(telegram_id, message) for (telegram_id,) in escorts]
+        await asyncio.gather(*tasks, return_exceptions=True)
+    except aiosqlite.Error as e:
+        logger.error(f"Ошибка уведомления сквада {squad_id}: {e}\n{traceback.format_exc()}")
 
 # Информация о скваде
 async def get_squad_info(squad_id: int):
@@ -374,10 +383,11 @@ async def export_orders_to_csv():
             if not orders:
                 return None
         filename = f"orders_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-        with open(filename, 'w', encoding='utf-8') as f:
-            f.write("ID,Memo Order ID,Customer Info,Amount,Status,Created At,Commission Amount\n")
+        with open(filename, 'w', encoding='utf-8', newline='') as f:
+            writer = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
+            writer.writerow(["ID", "Memo Order ID", "Customer Info", "Amount", "Status", "Created At", "Commission Amount"])
             for order in orders:
-                f.write(','.join(str(x) for x in order) + '\n')
+                writer.writerow([str(x) if x is not None else '' for x in order])
         return filename
     except (aiosqlite.Error, OSError) as e:
         logger.error(f"Ошибка экспорта заказов: {e}\n{traceback.format_exc()}")
@@ -621,15 +631,16 @@ async def process_squad_name(message: types.Message, state: FSMContext):
         await state.clear()
     except aiosqlite.Error as e:
         logger.error(f"Ошибка базы данных в process_squad_name для {user_id}: {e}\n{traceback.format_exc()}")
-        await message.answer("⚠️ Ошибка базы данных при создании сквада.", reply_markup=get_squads_keyboard())
+        await message.answer("⚠️ Ошибка базы данных.", reply_markup=get_squads_keyboard())
         await state.clear()
     except TelegramAPIError as e:
         logger.error(f"Ошибка Telegram API в process_squad_name для {user_id}: {e}\n{traceback.format_exc()}")
         await message.answer(MESSAGES["error"], reply_markup=get_squads_keyboard())
         await state.clear()
 
+# Обработчик списка сквадов
 @dp.message(Text("📋 Список сквадов"))
-async def list_squads(message: types.Message):
+async def list_squads(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     if not is_admin(user_id):
         await message.answer(MESSAGES["no_access"], reply_markup=get_menu_keyboard(user_id))
@@ -642,26 +653,26 @@ async def list_squads(message: types.Message):
             await message.answer(MESSAGES["no_squads"], reply_markup=get_squads_keyboard())
             return
         response = "🏠 Список сквадов:\n"
-        for squad_id, squad_name in squads:
+        for squad_id, name in squads:
             squad_info = await get_squad_info(squad_id)
             if squad_info:
                 name, total_orders, total_balance, rating, rating_count, member_count = squad_info
-                avg_rating = rating / rating_count if rating_count > 0 else 0
                 response += (
-                    f"📌 {name}\n"
-                    f"👥 Участников: {member_count}\n"
-                    f"📋 Заказов: {total_orders}\n"
+                    f"🏠 {name}\n"
+                    f"📝 Заказов: {total_orders}\n"
                     f"💰 Баланс: {total_balance:.2f} руб.\n"
-                    f"🌟 Рейтинг: {avg_rating:.2f} ⭐ ({rating_count} оценок)\n\n"
+                    f"⭐ Рейтинг: {rating:.1f} ({rating_count} оценок)\n"
+                    f"👥 Участников: {member_count}\n\n"
                 )
         await message.answer(response, reply_markup=get_squads_keyboard())
     except aiosqlite.Error as e:
         logger.error(f"Ошибка базы данных в list_squads для {user_id}: {e}\n{traceback.format_exc()}")
-        await message.answer("⚠️ Ошибка базы данных при получении списка сквадов.", reply_markup=get_squads_keyboard())
+        await message.answer("⚠️ Ошибка базы данных.", reply_markup=get_squads_keyboard())
     except TelegramAPIError as e:
         logger.error(f"Ошибка Telegram API в list_squads для {user_id}: {e}\n{traceback.format_exc()}")
         await message.answer(MESSAGES["error"], reply_markup=get_squads_keyboard())
 
+# Обработчик расформирования сквада
 @dp.message(Text("🗑️ Расформировать сквад"))
 async def delete_squad(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
@@ -669,22 +680,11 @@ async def delete_squad(message: types.Message, state: FSMContext):
         await message.answer(MESSAGES["no_access"], reply_markup=get_menu_keyboard(user_id))
         return
     try:
-        async with aiosqlite.connect(DB_PATH) as conn:
-            cursor = await conn.execute("SELECT id, name FROM squads")
-            squads = await cursor.fetchall()
-        if not squads:
-            await message.answer(MESSAGES["no_squads"], reply_markup=get_squads_keyboard())
-            await state.clear()
-            return
-        response = "🏠 Введите название сквада для расформирования:\n"
-        for _, name in squads:
-            response += f"- {name}\n"
-        await message.answer(response, reply_markup=get_cancel_keyboard(True))
+        await message.answer(
+            "🗑️ Введите название сквада для расформирования:",
+            reply_markup=get_cancel_keyboard(True)
+        )
         await state.set_state(Form.delete_squad)
-    except aiosqlite.Error as e:
-        logger.error(f"Ошибка базы данных в delete_squad для {user_id}: {e}\n{traceback.format_exc()}")
-        await message.answer("⚠️ Ошибка базы данных при получении списка сквадов.", reply_markup=get_squads_keyboard())
-        await state.clear()
     except TelegramAPIError as e:
         logger.error(f"Ошибка Telegram API в delete_squad для {user_id}: {e}\n{traceback.format_exc()}")
         await message.answer(MESSAGES["error"], reply_markup=get_squads_keyboard())
@@ -698,45 +698,47 @@ async def process_delete_squad(message: types.Message, state: FSMContext):
         await state.clear()
         return
     squad_name = message.text.strip()
+    if not squad_name:
+        await message.answer("⚠️ Название сквада не может быть пустым.", reply_markup=get_cancel_keyboard(True))
+        return
     try:
         async with aiosqlite.connect(DB_PATH) as conn:
             cursor = await conn.execute("SELECT id FROM squads WHERE name = ?", (squad_name,))
             squad = await cursor.fetchone()
             if not squad:
-                await message.answer(f"⚠️ Сквад '{squad_name}' не найден.", reply_markup=get_squads_keyboard())
-                await state.clear()
+                await message.answer(f"⚠️ Сквад '{squad_name}' не найден.", reply_markup=get_cancel_keyboard(True))
                 return
             squad_id = squad[0]
             await conn.execute("DELETE FROM squads WHERE id = ?", (squad_id,))
             await conn.execute("UPDATE escorts SET squad_id = NULL WHERE squad_id = ?", (squad_id,))
             await conn.commit()
         await message.answer(MESSAGES["squad_deleted"].format(squad_name=squad_name), reply_markup=get_squads_keyboard())
-        await log_action("delete_squad", user_id, None, f"Сквад '{squad_name}' расформирован")
+        await log_action("delete_squad", user_id, None, f"Расформирован сквад '{squad_name}'")
         await state.clear()
     except aiosqlite.Error as e:
         logger.error(f"Ошибка базы данных в process_delete_squad для {user_id}: {e}\n{traceback.format_exc()}")
-        await message.answer("⚠️ Ошибка базы данных при удалении сквада.", reply_markup=get_squads_keyboard())
+        await message.answer("⚠️ Ошибка базы данных.", reply_markup=get_squads_keyboard())
         await state.clear()
     except TelegramAPIError as e:
         logger.error(f"Ошибка Telegram API в process_delete_squad для {user_id}: {e}\n{traceback.format_exc()}")
         await message.answer(MESSAGES["error"], reply_markup=get_squads_keyboard())
         await state.clear()
 
+# Обработчик добавления сопровождающего
 @dp.message(Text("👤 Добавить сопровождающего"))
-async def add_escort_admin(message: types.Message, state: FSMContext):
+async def add_escort(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     if not is_admin(user_id):
         await message.answer(MESSAGES["no_access"], reply_markup=get_menu_keyboard(user_id))
         return
     try:
         await message.answer(
-            "👤 Введите Telegram ID, username (через @), PUBG ID и название сквада через запятую\n"
-            "Пример: 123456789, @username, 987654321, SquadName",
+            "👤 Введите данные сопровождающего (Telegram ID, @username, PUBG ID, Название сквада):",
             reply_markup=get_cancel_keyboard(True)
         )
         await state.set_state(Form.escort_info)
     except TelegramAPIError as e:
-        logger.error(f"Ошибка Telegram API в add_escort_admin для {user_id}: {e}\n{traceback.format_exc()}")
+        logger.error(f"Ошибка Telegram API в add_escort для {user_id}: {e}\n{traceback.format_exc()}")
         await message.answer(MESSAGES["error"], reply_markup=get_escorts_keyboard())
         await state.clear()
 
@@ -748,62 +750,52 @@ async def process_escort_info(message: types.Message, state: FSMContext):
         await state.clear()
         return
     try:
-        data = [x.strip() for x in message.text.split(",", 3)]
-        if len(data) != 4:
+        parts = [x.strip() for x in message.text.split(",", 3)]
+        if len(parts) != 4:
             await message.answer(
-                "⚠️ Неверный формат. Ожидается: Telegram ID, @username, PUBG ID, SquadName",
+                MESSAGES["invalid_format"] + "\nПример: 123456789, @username, PUBG123, Название сквада",
                 reply_markup=get_cancel_keyboard(True)
             )
             return
-        telegram_id, username, pubg_id, squad_name = data
+        telegram_id, username, pubg_id, squad_name = parts
         telegram_id = int(telegram_id)
-        username = username.lstrip("@")
-        if not squad_name:
-            await message.answer("⚠️ Название сквада не может быть пустым.", reply_markup=get_cancel_keyboard(True))
+        if telegram_id == user_id:
+            await message.answer("⚠️ Нельзя добавить самого себя!", reply_markup=get_cancel_keyboard(True))
             return
         async with aiosqlite.connect(DB_PATH) as conn:
             cursor = await conn.execute("SELECT id FROM squads WHERE name = ?", (squad_name,))
             squad = await cursor.fetchone()
+            squad_id = squad[0] if squad else None
             if not squad:
                 await message.answer(f"⚠️ Сквад '{squad_name}' не найден.", reply_markup=get_cancel_keyboard(True))
-                await state.clear()
                 return
-            squad_id = squad[0]
-            cursor = await conn.execute("SELECT id FROM escorts WHERE telegram_id = ?", (telegram_id,))
-            existing_escort = await cursor.fetchone()
-            if existing_escort:
-                await conn.execute(
-                    "UPDATE escorts SET username = ?, pubg_id = ?, squad_id = ?, rules_accepted = 1 WHERE telegram_id = ?",
-                    (username, pubg_id, squad_id, telegram_id)
-                )
-            else:
-                await conn.execute(
-                    "INSERT INTO escorts (telegram_id, username, pubg_id, squad_id, rules_accepted) VALUES (?, ?, ?, ?, 1)",
-                    (telegram_id, username, pubg_id, squad_id)
-                )
+            cursor = await conn.execute("SELECT telegram_id FROM escorts WHERE telegram_id = ?", (telegram_id,))
+            if await cursor.fetchone():
+                await message.answer(f"⚠️ Пользователь с Telegram ID {telegram_id} уже зарегистрирован.", reply_markup=get_cancel_keyboard(True))
+                return
+            await conn.execute(
+                "INSERT INTO escorts (telegram_id, username, pubg_id, squad_id) VALUES (?, ?, ?, ?)",
+                (telegram_id, username, pubg_id, squad_id)
+            )
             await conn.commit()
-        await message.answer(
-            f"👤 Сопровождающий @{username} добавлен в сквад '{squad_name}'!", reply_markup=get_escorts_keyboard()
-        )
-        await log_action(
-            "add_escort", user_id, None, f"Добавлен сопровождающий @{username} в сквад '{squad_name}'"
-        )
+        await message.answer(f"👤 Сопровождающий {username} успешно добавлен!", reply_markup=get_escorts_keyboard())
+        await log_action("add_escort", user_id, None, f"Добавлен сопровождающий {username} (ID: {telegram_id})")
         await state.clear()
-    except ValueError as e:
-        logger.error(f"Ошибка преобразования данных в process_escort_info для {user_id}: {e}\n{traceback.format_exc()}")
+    except ValueError:
         await message.answer(
-            "⚠️ Неверный формат Telegram ID или данных.", reply_markup=get_cancel_keyboard(True)
+            MESSAGES["invalid_format"] + "\nПример: 123456789, @username, PUBG123, Название сквада",
+            reply_markup=get_cancel_keyboard(True)
         )
-        await state.clear()
     except aiosqlite.Error as e:
         logger.error(f"Ошибка базы данных в process_escort_info для {user_id}: {e}\n{traceback.format_exc()}")
-        await message.answer("⚠️ Ошибка базы данных при добавлении сопровождающего.", reply_markup=get_escorts_keyboard())
+        await message.answer("⚠️ Ошибка базы данных.", reply_markup=get_escorts_keyboard())
         await state.clear()
     except TelegramAPIError as e:
         logger.error(f"Ошибка Telegram API в process_escort_info для {user_id}: {e}\n{traceback.format_exc()}")
         await message.answer(MESSAGES["error"], reply_markup=get_escorts_keyboard())
         await state.clear()
 
+# Обработчик удаления сопровождающего
 @dp.message(Text("🗑️ Удалить сопровождающего"))
 async def remove_escort(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
@@ -811,22 +803,11 @@ async def remove_escort(message: types.Message, state: FSMContext):
         await message.answer(MESSAGES["no_access"], reply_markup=get_menu_keyboard(user_id))
         return
     try:
-        async with aiosqlite.connect(DB_PATH) as conn:
-            cursor = await conn.execute("SELECT telegram_id, username FROM escorts")
-            escorts = await cursor.fetchall()
-        if not escorts:
-            await message.answer(MESSAGES["no_escorts"], reply_markup=get_escorts_keyboard())
-            await state.clear()
-            return
-        response = "👤 Введите Telegram ID сопровождающего для удаления:\n"
-        for telegram_id, username in escorts:
-            response += f"@{username or 'Unknown'} - {telegram_id}\n"
-        await message.answer(response, reply_markup=get_cancel_keyboard(True))
+        await message.answer(
+            "🗑️ Введите Telegram ID сопровождающего для удаления:",
+            reply_markup=get_cancel_keyboard(True)
+        )
         await state.set_state(Form.remove_escort)
-    except aiosqlite.Error as e:
-        logger.error(f"Ошибка базы данных в remove_escort для {user_id}: {e}\n{traceback.format_exc()}")
-        await message.answer("⚠️ Ошибка базы данных при получении списка сопровождающих.", reply_markup=get_escorts_keyboard())
-        await state.clear()
     except TelegramAPIError as e:
         logger.error(f"Ошибка Telegram API в remove_escort для {user_id}: {e}\n{traceback.format_exc()}")
         await message.answer(MESSAGES["error"], reply_markup=get_escorts_keyboard())
@@ -840,33 +821,80 @@ async def process_remove_escort(message: types.Message, state: FSMContext):
         await state.clear()
         return
     try:
-        escort_telegram_id = int(message.text.strip())
+        telegram_id = int(message.text.strip())
+        if telegram_id == user_id:
+            await message.answer("⚠️ Нельзя удалить самого себя!", reply_markup=get_cancel_keyboard(True))
+            return
         async with aiosqlite.connect(DB_PATH) as conn:
-            cursor = await conn.execute("SELECT username FROM escorts WHERE telegram_id = ?", (escort_telegram_id,))
-            escort = await cursor.fetchone()
-            if not escort:
-                await message.answer(f"⚠️ Сопровождающий с ID {escort_telegram_id} не найден.", reply_markup=get_escorts_keyboard())
-                await state.clear()
+            cursor = await conn.execute("SELECT username FROM escorts WHERE telegram_id = ?", (telegram_id,))
+            user = await cursor.fetchone()
+            if not user:
+                await message.answer(f"⚠️ Пользователь с Telegram ID {telegram_id} не найден.", reply_markup=get_cancel_keyboard(True))
                 return
-            username = escort[0]
-            await conn.execute("DELETE FROM escorts WHERE telegram_id = ?", (escort_telegram_id,))
+            username = user[0]
+            await conn.execute("DELETE FROM escorts WHERE telegram_id = ?", (telegram_id,))
             await conn.commit()
-        await message.answer(f"👤 Сопровождающий @{username or 'Unknown'} удален!", reply_markup=get_escorts_keyboard())
-        await log_action("remove_escort", user_id, None, f"Удален сопровождающий @{username or 'Unknown'}")
+        await message.answer(f"🗑️ Сопровождающий @{username} удален.", reply_markup=get_escorts_keyboard())
+        await log_action("remove_escort", user_id, None, f"Удален сопровождающий @{username} (ID: {telegram_id})")
         await state.clear()
     except ValueError:
-        logger.error(f"Ошибка преобразования ID в process_remove_escort для {user_id}: Неверный формат ID\n{traceback.format_exc()}")
         await message.answer("⚠️ Неверный формат Telegram ID.", reply_markup=get_cancel_keyboard(True))
-        await state.clear()
     except aiosqlite.Error as e:
         logger.error(f"Ошибка базы данных в process_remove_escort для {user_id}: {e}\n{traceback.format_exc()}")
-        await message.answer("⚠️ Ошибка базы данных при удалении сопровождающего.", reply_markup=get_escorts_keyboard())
+        await message.answer("⚠️ Ошибка базы данных.", reply_markup=get_escorts_keyboard())
         await state.clear()
     except TelegramAPIError as e:
         logger.error(f"Ошибка Telegram API в process_remove_escort для {user_id}: {e}\n{traceback.format_exc()}")
         await message.answer(MESSAGES["error"], reply_markup=get_escorts_keyboard())
         await state.clear()
 
+# Обработчик списка пользователей
+@dp.message(Text("👥 Пользователи"))
+async def list_escorts(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        await message.answer(MESSAGES["no_access"], reply_markup=get_menu_keyboard(user_id))
+        return
+    try:
+        async with aiosqlite.connect(DB_PATH) as conn:
+            cursor = await conn.execute(
+                '''
+                SELECT telegram_id, username, pubg_id, squad_id, balance, reputation,
+                       completed_orders, rating, rating_count, is_banned, ban_until, restrict_until
+                FROM escorts
+                '''
+            )
+            escorts = await cursor.fetchall()
+        if not escorts:
+            await message.answer(MESSAGES["no_escorts"], reply_markup=get_escorts_keyboard())
+            return
+        response = "👥 Список сопровождающих:\n"
+        for escort in escorts:
+            telegram_id, username, pubg_id, squad_id, balance, reputation, completed_orders, rating, rating_count, is_banned, ban_until, restrict_until = escort
+            squad_info = await get_squad_info(squad_id) if squad_id else None
+            squad_name = squad_info[0] if squad_info else "Нет"
+            ban_status = "🚫 Забанен" if is_banned else ("⏰ Бан до " + datetime.fromisoformat(ban_until).strftime("%d.%m.%Y %H:%M") if ban_until else "✅ Активен")
+            restrict_status = "⛔ Ограничен до " + datetime.fromisoformat(restrict_until).strftime("%d.%m.%Y %H:%M") if restrict_until else "🔓 Без ограничений"
+            response += (
+                f"👤 @{username} (ID: {telegram_id})\n"
+                f"🎮 PUBG ID: {pubg_id}\n"
+                f"🏠 Сквад: {squad_name}\n"
+                f"💰 Баланс: {balance:.2f} руб.\n"
+                f"🌟 Репутация: {reputation}\n"
+                f"📝 Заказов: {completed_orders}\n"
+                f"⭐ Рейтинг: {rating:.1f} ({rating_count} оценок)\n"
+                f"🔒 Статус: {ban_status}\n"
+                f"⛔ Ограничения: {restrict_status}\n\n"
+            )
+        await message.answer(response, reply_markup=get_escorts_keyboard())
+    except aiosqlite.Error as e:
+        logger.error(f"Ошибка базы данных в list_escorts для {user_id}: {e}\n{traceback.format_exc()}")
+        await message.answer("⚠️ Ошибка базы данных.", reply_markup=get_escorts_keyboard())
+    except TelegramAPIError as e:
+        logger.error(f"Ошибка Telegram API в list_escorts для {user_id}: {e}\n{traceback.format_exc()}")
+        await message.answer(MESSAGES["error"], reply_markup=get_escorts_keyboard())
+
+# Обработчик добавления заказа
 @dp.message(Text("📝 Добавить заказ"))
 async def add_order(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
@@ -875,7 +903,7 @@ async def add_order(message: types.Message, state: FSMContext):
         return
     try:
         await message.answer(
-            "📝 Введите ID заказа, описание клиента и сумму через запятую\nПример: ORDER123, Клиент Иванов, 1000.00",
+            "📝 Введите данные заказа (ID заказа, описание клиента, сумма):",
             reply_markup=get_cancel_keyboard(True)
         )
         await state.set_state(Form.add_order)
@@ -895,12 +923,12 @@ async def process_add_order(message: types.Message, state: FSMContext):
         parts = [x.strip() for x in message.text.split(",", 2)]
         if len(parts) != 3:
             await message.answer(
-                "⚠️ Неверный формат. Ожидается: ID заказа, описание клиента, сумма",
+                MESSAGES["invalid_format"] + "\nПример: ORDER123, Клиент Иванов, 5000",
                 reply_markup=get_cancel_keyboard(True)
             )
             return
-        order_id, customer, amount = parts
-        amount = float(amount)
+        order_id, customer, amount_str = parts
+        amount = float(amount_str)
         if amount <= 0 or not order_id or not customer:
             await message.answer(
                 "⚠️ ID заказа и описание не могут быть пустыми, сумма должна быть положительной.",
@@ -910,66 +938,35 @@ async def process_add_order(message: types.Message, state: FSMContext):
         async with aiosqlite.connect(DB_PATH) as conn:
             cursor = await conn.execute("SELECT id FROM orders WHERE memo_order_id = ?", (order_id,))
             if await cursor.fetchone():
-                await message.answer(f"⚠️ Заказ с ID {order_id} уже существует.", reply_markup=get_cancel_keyboard(True))
+                await message.answer(f"⚠️ Заказ #{order_id} уже существует.", reply_markup=get_cancel_keyboard(True))
                 return
             await conn.execute(
-                '''
-                INSERT INTO orders (memo_order_id, customer_info, amount)
-                VALUES (?, ?, ?)
-                ''', (order_id, customer, amount)
+                "INSERT INTO orders (memo_order_id, customer_info, amount) VALUES (?, ?, ?)",
+                (order_id, customer, amount)
             )
             await conn.commit()
         await message.answer(
-            MESSAGES["order_added"].format(order_id=order_id, amount=amount, description=customer, customer=customer),
+            MESSAGES["order_added"].format(order_id=order_id, customer=customer, amount=amount, description=customer),
             reply_markup=get_orders_keyboard()
         )
-        await log_action(
-            "add_order",
-            user_id,
-            None,
-            f"Добавлен заказ #{order_id}, клиент: {customer}, сумма: {amount:.2f} руб."
-        )
-        await notify_squad(None, f"📝 Новый заказ #{order_id} добавлен!\nКлиент: {customer}\nСумма: {amount:.2f} руб.")
+        await log_action("add_order", user_id, order_id, f"Добавлен заказ #{order_id} для {customer}, сумма: {amount:.2f}")
+        await notify_admins(f"📝 Новый заказ #{order_id} добавлен!\nКлиент: {customer}\nСумма: {amount:.2f} руб.")
         await state.clear()
     except ValueError:
-        logger.error(f"Ошибка преобразования суммы в process_add_order для {user_id}: Неверный формат\n{traceback.format_exc()}")
-        await message.answer("⚠️ Неверный формат суммы.", reply_markup=get_cancel_keyboard(True))
-        await state.clear()
+        await message.answer(
+            MESSAGES["invalid_format"] + "\nПример: ORDER123, Клиент Иванов, 5000",
+            reply_markup=get_cancel_keyboard(True)
+        )
     except aiosqlite.Error as e:
         logger.error(f"Ошибка базы данных в process_add_order для {user_id}: {e}\n{traceback.format_exc()}")
-        await message.answer("⚠️ Ошибка базы данных при добавлении заказа.", reply_markup=get_orders_keyboard())
+        await message.answer("⚠️ Ошибка базы данных.", reply_markup=get_orders_keyboard())
         await state.clear()
     except TelegramAPIError as e:
         logger.error(f"Ошибка Telegram API в process_add_order для {user_id}: {e}\n{traceback.format_exc()}")
         await message.answer(MESSAGES["error"], reply_markup=get_orders_keyboard())
         await state.clear()
 
-@dp.message(Text("💰 Балансы сопровождающих"))
-async def list_escort_balances(message: types.Message):
-    user_id = message.from_user.id
-    if not is_admin(user_id):
-        await message.answer(MESSAGES["no_access"], reply_markup=get_menu_keyboard(user_id))
-        return
-    try:
-        async with aiosqlite.connect(DB_PATH) as conn:
-            cursor = await conn.execute(
-                "SELECT telegram_id, username, balance FROM escorts WHERE balance > 0 ORDER BY balance DESC"
-            )
-            escorts = await cursor.fetchall()
-        if not escorts:
-            await message.answer("⚠️ Нет сопровождающих с положительным балансом.", reply_markup=get_balances_keyboard())
-            return
-        response = "💰 Балансы сопровождающих:\n"
-        for telegram_id, username, balance in escorts:
-            response += f"@{username or 'Unknown'} (ID: {telegram_id}): {balance:.2f} руб.\n"
-        await message.answer(response, reply_markup=get_balances_keyboard())
-    except aiosqlite.Error as e:
-        logger.error(f"Ошибка базы данных в list_escort_balances для {user_id}: {e}\n{traceback.format_exc()}")
-        await message.answer("⚠️ Ошибка базы данных при получении балансов.", reply_markup=get_balances_keyboard())
-    except TelegramAPIError as e:
-        logger.error(f"Ошибка Telegram API в list_escort_balances для {user_id}: {e}\n{traceback.format_exc()}")
-        await message.answer(MESSAGES["error"], reply_markup=get_balances_keyboard())
-
+# Обработчик начисления баланса
 @dp.message(Text("💸 Начислить"))
 async def add_balance(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
@@ -978,7 +975,7 @@ async def add_balance(message: types.Message, state: FSMContext):
         return
     try:
         await message.answer(
-            "💸 Введите Telegram ID и сумму для начисления (например, 123456789, 500.00):",
+            "💸 Введите Telegram ID и сумму для начисления (через запятую):",
             reply_markup=get_cancel_keyboard(True)
         )
         await state.set_state(Form.balance_amount)
@@ -995,20 +992,25 @@ async def process_balance_amount(message: types.Message, state: FSMContext):
         await state.clear()
         return
     try:
-        telegram_id, amount = [x.strip() for x in message.text.split(",", 1)]
+        parts = [x.strip() for x in message.text.split(",", 1)]
+        if len(parts) != 2:
+            await message.answer(
+                MESSAGES["invalid_format"] + "\nПример: 123456789, 1000",
+                reply_markup=get_cancel_keyboard(True)
+            )
+            return
+        telegram_id, amount_str = parts
         telegram_id = int(telegram_id)
-        amount = float(amount)
+        amount = float(amount_str)
         if amount <= 0:
             await message.answer("⚠️ Сумма должна быть положительной.", reply_markup=get_cancel_keyboard(True))
             return
         async with aiosqlite.connect(DB_PATH) as conn:
-            cursor = await conn.execute("SELECT username FROM escorts WHERE telegram_id = ?", (telegram_id,))
+            cursor = await conn.execute("SELECT id FROM escorts WHERE telegram_id = ?", (telegram_id,))
             escort = await cursor.fetchone()
             if not escort:
-                await message.answer(f"⚠️ Пользователь с ID {telegram_id} не найден.", reply_markup=get_balances_keyboard())
-                await state.clear()
+                await message.answer(f"⚠️ Пользователь с Telegram ID {telegram_id} не найден.", reply_markup=get_cancel_keyboard(True))
                 return
-            username = escort[0]
             await conn.execute(
                 "UPDATE escorts SET balance = balance + ? WHERE telegram_id = ?",
                 (amount, telegram_id)
@@ -1018,26 +1020,24 @@ async def process_balance_amount(message: types.Message, state: FSMContext):
             MESSAGES["balance_added"].format(amount=amount, user_id=telegram_id),
             reply_markup=get_balances_keyboard()
         )
-        await log_action(
-            "add_balance",
-            user_id,
-            None,
-            f"Начислено {amount:.2f} руб. пользователю @{username or 'Unknown'}"
-        )
+        await log_action("add_balance", user_id, None, f"Начислено {amount:.2f} руб. пользователю ID {telegram_id}")
+        await safe_send_message(telegram_id, f"💸 Вам начислено {amount:.2f} руб.")
         await state.clear()
     except ValueError:
-        logger.error(f"Ошибка преобразования данных в process_balance_amount для {user_id}: Неверный формат\n{traceback.format_exc()}")
-        await message.answer("⚠️ Неверный формат Telegram ID или суммы.", reply_markup=get_cancel_keyboard(True))
-        await state.clear()
+        await message.answer(
+            MESSAGES["invalid_format"] + "\nПример: 123456789, 1000",
+            reply_markup=get_cancel_keyboard(True)
+        )
     except aiosqlite.Error as e:
         logger.error(f"Ошибка базы данных в process_balance_amount для {user_id}: {e}\n{traceback.format_exc()}")
-        await message.answer("⚠️ Ошибка базы данных при начислении баланса.", reply_markup=get_balances_keyboard())
+        await message.answer("⚠️ Ошибка базы данных.", reply_markup=get_balances_keyboard())
         await state.clear()
     except TelegramAPIError as e:
         logger.error(f"Ошибка Telegram API в process_balance_amount для {user_id}: {e}\n{traceback.format_exc()}")
         await message.answer(MESSAGES["error"], reply_markup=get_balances_keyboard())
         await state.clear()
 
+# Обработчик обнуления баланса
 @dp.message(Text("💰 Обнулить баланс"))
 async def zero_balance(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
@@ -1064,43 +1064,36 @@ async def process_zero_balance(message: types.Message, state: FSMContext):
         return
     try:
         telegram_id = int(message.text.strip())
+        if telegram_id == user_id:
+            await message.answer("⚠️ Нельзя обнулить свой баланс!", reply_markup=get_cancel_keyboard(True))
+            return
         async with aiosqlite.connect(DB_PATH) as conn:
             cursor = await conn.execute("SELECT username FROM escorts WHERE telegram_id = ?", (telegram_id,))
             user = await cursor.fetchone()
             if not user:
-                await message.answer(f"⚠️ Пользователь с ID {telegram_id} не найден.", reply_markup=get_balances_keyboard())
-                await state.clear()
+                await message.answer(f"⚠️ Пользователь с Telegram ID {telegram_id} не найден.", reply_markup=get_cancel_keyboard(True))
                 return
-            username = user[0]
-            await conn.execute(
-                "UPDATE escorts SET balance = 0 WHERE telegram_id = ?",
-                (telegram_id,)
-            )
+            await conn.execute("UPDATE escorts SET balance = 0 WHERE telegram_id = ?", (telegram_id,))
             await conn.commit()
         await message.answer(
             MESSAGES["balance_zeroed"].format(user_id=telegram_id),
             reply_markup=get_balances_keyboard()
         )
-        await log_action(
-            "zero_balance",
-            user_id,
-            None,
-            f"Баланс пользователя @{username or 'Unknown'} обнулен"
-        )
+        await log_action("zero_balance", user_id, None, f"Обнулен баланс пользователя ID {telegram_id}")
+        await safe_send_message(telegram_id, "💰 Ваш баланс обнулен администратором.")
         await state.clear()
     except ValueError:
-        logger.error(f"Ошибка преобразования ID в process_zero_balance для {user_id}: Неверный формат\n{traceback.format_exc()}")
         await message.answer("⚠️ Неверный формат Telegram ID.", reply_markup=get_cancel_keyboard(True))
-        await state.clear()
     except aiosqlite.Error as e:
         logger.error(f"Ошибка базы данных в process_zero_balance для {user_id}: {e}\n{traceback.format_exc()}")
-        await message.answer("⚠️ Ошибка базы данных при обнулении баланса.", reply_markup=get_balances_keyboard())
+        await message.answer("⚠️ Ошибка базы данных.", reply_markup=get_balances_keyboard())
         await state.clear()
     except TelegramAPIError as e:
         logger.error(f"Ошибка Telegram API в process_zero_balance для {user_id}: {e}\n{traceback.format_exc()}")
         await message.answer(MESSAGES["error"], reply_markup=get_balances_keyboard())
         await state.clear()
 
+# Обработчик бана навсегда
 @dp.message(Text("🚫 Бан навсегда"))
 async def ban_permanent(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
@@ -1126,51 +1119,55 @@ async def process_ban_permanent(message: types.Message, state: FSMContext):
         await state.clear()
         return
     try:
-        ban_user_id = int(message.text.strip())
+        telegram_id = int(message.text.strip())
+        if telegram_id == user_id:
+            await message.answer("⚠️ Нельзя забанить самого себя!", reply_markup=get_cancel_keyboard(True))
+            return
         async with aiosqlite.connect(DB_PATH) as conn:
-            cursor = await conn.execute("SELECT username FROM escorts WHERE telegram_id = ?", (ban_user_id,))
+            cursor = await conn.execute("SELECT username FROM escorts WHERE telegram_id = ?", (telegram_id,))
             user = await cursor.fetchone()
             if not user:
-                await message.answer(f"⚠️ Пользователь с ID {ban_user_id} не найден.", reply_markup=get_ban_restrict_keyboard())
-                await state.clear()
+                await message.answer(f"⚠️ Пользователь с Telegram ID {telegram_id} не найден.", reply_markup=get_cancel_keyboard(True))
                 return
             username = user[0]
             await conn.execute(
                 "UPDATE escorts SET is_banned = 1, ban_until = NULL WHERE telegram_id = ?",
-                (ban_user_id,)
+                (telegram_id,)
             )
             await conn.commit()
-        await message.answer(f"🚫 Пользователь @{username or 'Unknown'} заблокирован навсегда!", reply_markup=get_ban_restrict_keyboard())
-        await log_action("ban_permanent", user_id, None, f"Пользователь @{username or 'Unknown'} заблокирован навсегда")
-        await safe_send_message(ban_user_id, MESSAGES["user_banned"])
+        await message.answer(
+            f"🚫 Пользователь @{username} заблокирован навсегда.",
+            reply_markup=get_ban_restrict_keyboard()
+        )
+        await log_action("ban_permanent", user_id, None, f"Забанен пользователь @{username} (ID: {telegram_id}) навсегда")
+        await safe_send_message(telegram_id, MESSAGES["user_banned"])
         await state.clear()
     except ValueError:
-        logger.error(f"Ошибка преобразования ID в process_ban_permanent для {user_id}: Неверный формат\n{traceback.format_exc()}")
         await message.answer("⚠️ Неверный формат Telegram ID.", reply_markup=get_cancel_keyboard(True))
-        await state.clear()
     except aiosqlite.Error as e:
         logger.error(f"Ошибка базы данных в process_ban_permanent для {user_id}: {e}\n{traceback.format_exc()}")
-        await message.answer("⚠️ Ошибка базы данных при бане пользователя.", reply_markup=get_ban_restrict_keyboard())
+        await message.answer("⚠️ Ошибка базы данных.", reply_markup=get_ban_restrict_keyboard())
         await state.clear()
     except TelegramAPIError as e:
         logger.error(f"Ошибка Telegram API в process_ban_permanent для {user_id}: {e}\n{traceback.format_exc()}")
         await message.answer(MESSAGES["error"], reply_markup=get_ban_restrict_keyboard())
         await state.clear()
 
+# Обработчик бана на время
 @dp.message(Text("⏰ Бан на время"))
-async def ban_temporary(message: types.Message, state: FSMContext):
+async def ban_duration(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     if not is_admin(user_id):
         await message.answer(MESSAGES["no_access"], reply_markup=get_menu_keyboard(user_id))
         return
     try:
         await message.answer(
-            "⏰ Введите Telegram ID и количество дней бана (например, 123456789, 7):",
+            "⏰ Введите Telegram ID и длительность бана в днях (через запятую):",
             reply_markup=get_cancel_keyboard(True)
         )
         await state.set_state(Form.ban_duration)
     except TelegramAPIError as e:
-        logger.error(f"Ошибка Telegram API в ban_temporary для {user_id}: {e}\n{traceback.format_exc()}")
+        logger.error(f"Ошибка Telegram API в ban_duration для {user_id}: {e}\n{traceback.format_exc()}")
         await message.answer(MESSAGES["error"], reply_markup=get_ban_restrict_keyboard())
         await state.clear()
 
@@ -1182,53 +1179,58 @@ async def process_ban_duration(message: types.Message, state: FSMContext):
         await state.clear()
         return
     try:
-        telegram_id, days = [x.strip() for x in message.text.split(",", 1)]
-        telegram_id = int(telegram_id)
-        days = int(days)
-        if days <= 0:
-            await message.answer("⚠️ Количество дней должно быть положительным.", reply_markup=get_cancel_keyboard(True))
-            await state.clear()
+        parts = [x.strip() for x in message.text.split(",", 1)]
+        if len(parts) != 2:
+            await message.answer(
+                MESSAGES["invalid_format"] + "\nПример: 123456789, 7",
+                reply_markup=get_cancel_keyboard(True)
+            )
             return
-        ban_until = datetime.now() + timedelta(days=days)
-        formatted_date = ban_until.strftime("%d.%m.%Y %H:%M")
+        telegram_id, days_str = parts
+        telegram_id = int(telegram_id)
+        days = int(days_str)
+        if telegram_id == user_id:
+            await message.answer("⚠️ Нельзя забанить самого себя!", reply_markup=get_cancel_keyboard(True))
+            return
+        if days <= 0:
+            await message.answer("⚠️ Длительность бана должна быть положительной.", reply_markup=get_cancel_keyboard(True))
+            return
+        ban_until = (datetime.now() + timedelta(days=days)).isoformat()
         async with aiosqlite.connect(DB_PATH) as conn:
             cursor = await conn.execute("SELECT username FROM escorts WHERE telegram_id = ?", (telegram_id,))
             user = await cursor.fetchone()
             if not user:
-                await message.answer(f"⚠️ Пользователь с ID {telegram_id} не найден.", reply_markup=get_ban_restrict_keyboard())
-                await state.clear()
+                await message.answer(f"⚠️ Пользователь с Telegram ID {telegram_id} не найден.", reply_markup=get_cancel_keyboard(True))
                 return
             username = user[0]
             await conn.execute(
                 "UPDATE escorts SET is_banned = 1, ban_until = ? WHERE telegram_id = ?",
-                (ban_until.isoformat(), telegram_id)
+                (ban_until, telegram_id)
             )
             await conn.commit()
+        formatted_date = datetime.fromisoformat(ban_until).strftime("%d.%m.%Y %H:%M")
         await message.answer(
-            f"⏰ Пользователь @{username or 'Unknown'} заблокирован до {formatted_date}!",
+            f"⏰ Пользователь @{username} заблокирован до {formatted_date}.",
             reply_markup=get_ban_restrict_keyboard()
         )
-        await log_action(
-            "ban_temporary",
-            user_id,
-            None,
-            f"Пользователь @{username or 'Unknown'} заблокирован до {formatted_date}"
-        )
-        await safe_send_message(telegram_id, f"🚫 Вы заблокированы до {formatted_date}.")
+        await log_action("ban_duration", user_id, None, f"Забанен пользователь @{username} (ID: {telegram_id}) до {formatted_date}")
+        await safe_send_message(telegram_id, MESSAGES["user_restricted"].format(date=formatted_date))
         await state.clear()
     except ValueError:
-        logger.error(f"Ошибка преобразования данных в process_ban_duration для {user_id}: Неверный формат\n{traceback.format_exc()}")
-        await message.answer("⚠️ Неверный формат Telegram ID или количества дней.", reply_markup=get_cancel_keyboard(True))
-        await state.clear()
+        await message.answer(
+            MESSAGES["invalid_format"] + "\nПример: 123456789, 7",
+            reply_markup=get_cancel_keyboard(True)
+        )
     except aiosqlite.Error as e:
         logger.error(f"Ошибка базы данных в process_ban_duration для {user_id}: {e}\n{traceback.format_exc()}")
-        await message.answer("⚠️ Ошибка базы данных при бане пользователя.", reply_markup=get_ban_restrict_keyboard())
+        await message.answer("⚠️ Ошибка базы данных.", reply_markup=get_ban_restrict_keyboard())
         await state.clear()
     except TelegramAPIError as e:
         logger.error(f"Ошибка Telegram API в process_ban_duration для {user_id}: {e}\n{traceback.format_exc()}")
         await message.answer(MESSAGES["error"], reply_markup=get_ban_restrict_keyboard())
         await state.clear()
 
+# Обработчик ограничения
 @dp.message(Text("⛔ Ограничить"))
 async def restrict_user(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
@@ -1237,7 +1239,7 @@ async def restrict_user(message: types.Message, state: FSMContext):
         return
     try:
         await message.answer(
-            "⛔ Введите Telegram ID и количество дней ограничения (например, 123456789, 7):",
+            "⛔ Введите Telegram ID и длительность ограничения в днях (через запятую):",
             reply_markup=get_cancel_keyboard(True)
         )
         await state.set_state(Form.restrict_duration)
@@ -1254,53 +1256,58 @@ async def process_restrict_duration(message: types.Message, state: FSMContext):
         await state.clear()
         return
     try:
-        telegram_id, days = [x.strip() for x in message.text.split(",", 1)]
-        telegram_id = int(telegram_id)
-        days = int(days)
-        if days <= 0:
-            await message.answer("⚠️ Количество дней должно быть положительным.", reply_markup=get_cancel_keyboard(True))
-            await state.clear()
+        parts = [x.strip() for x in message.text.split(",", 1)]
+        if len(parts) != 2:
+            await message.answer(
+                MESSAGES["invalid_format"] + "\nПример: 123456789, 7",
+                reply_markup=get_cancel_keyboard(True)
+            )
             return
-        restrict_until = datetime.now() + timedelta(days=days)
-        formatted_date = restrict_until.strftime("%d.%m.%Y %H:%M")
+        telegram_id, days_str = parts
+        telegram_id = int(telegram_id)
+        days = int(days_str)
+        if telegram_id == user_id:
+            await message.answer("⚠️ Нельзя ограничить самого себя!", reply_markup=get_cancel_keyboard(True))
+            return
+        if days <= 0:
+            await message.answer("⚠️ Длительность ограничения должна быть положительной.", reply_markup=get_cancel_keyboard(True))
+            return
+        restrict_until = (datetime.now() + timedelta(days=days)).isoformat()
         async with aiosqlite.connect(DB_PATH) as conn:
             cursor = await conn.execute("SELECT username FROM escorts WHERE telegram_id = ?", (telegram_id,))
             user = await cursor.fetchone()
             if not user:
-                await message.answer(f"⚠️ Пользователь с ID {telegram_id} не найден.", reply_markup=get_ban_restrict_keyboard())
-                await state.clear()
+                await message.answer(f"⚠️ Пользователь с Telegram ID {telegram_id} не найден.", reply_markup=get_cancel_keyboard(True))
                 return
             username = user[0]
             await conn.execute(
                 "UPDATE escorts SET restrict_until = ? WHERE telegram_id = ?",
-                (restrict_until.isoformat(), telegram_id)
+                (restrict_until, telegram_id)
             )
             await conn.commit()
+        formatted_date = datetime.fromisoformat(restrict_until).strftime("%d.%m.%Y %H:%M")
         await message.answer(
-            f"⛔ Пользователь @{username or 'Unknown'} ограничен до {formatted_date}!",
+            f"⛔ Пользователь @{username} ограничен до {formatted_date}.",
             reply_markup=get_ban_restrict_keyboard()
         )
-        await log_action(
-            "restrict_user",
-            user_id,
-            None,
-            f"Пользователь @{username or 'Unknown'} ограничен до {formatted_date}"
-        )
+        await log_action("restrict_user", user_id, None, f"Ограничен пользователь @{username} (ID: {telegram_id}) до {formatted_date}")
         await safe_send_message(telegram_id, MESSAGES["user_restricted"].format(date=formatted_date))
         await state.clear()
     except ValueError:
-        logger.error(f"Ошибка преобразования данных в process_restrict_duration для {user_id}: Неверный формат\n{traceback.format_exc()}")
-        await message.answer("⚠️ Неверный формат Telegram ID или количества дней.", reply_markup=get_cancel_keyboard(True))
-        await state.clear()
+        await message.answer(
+            MESSAGES["invalid_format"] + "\nПример: 123456789, 7",
+            reply_markup=get_cancel_keyboard(True)
+        )
     except aiosqlite.Error as e:
         logger.error(f"Ошибка базы данных в process_restrict_duration для {user_id}: {e}\n{traceback.format_exc()}")
-        await message.answer("⚠️ Ошибка базы данных при ограничении пользователя.", reply_markup=get_ban_restrict_keyboard())
+        await message.answer("⚠️ Ошибка базы данных.", reply_markup=get_ban_restrict_keyboard())
         await state.clear()
     except TelegramAPIError as e:
         logger.error(f"Ошибка Telegram API в process_restrict_duration для {user_id}: {e}\n{traceback.format_exc()}")
         await message.answer(MESSAGES["error"], reply_markup=get_ban_restrict_keyboard())
         await state.clear()
 
+# Обработчик снятия бана
 @dp.message(Text("🔒 Снять бан"))
 async def unban_user(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
@@ -1331,8 +1338,7 @@ async def process_unban_user(message: types.Message, state: FSMContext):
             cursor = await conn.execute("SELECT username FROM escorts WHERE telegram_id = ?", (telegram_id,))
             user = await cursor.fetchone()
             if not user:
-                await message.answer(f"⚠️ Пользователь с ID {telegram_id} не найден.", reply_markup=get_ban_restrict_keyboard())
-                await state.clear()
+                await message.answer(f"⚠️ Пользователь с Telegram ID {telegram_id} не найден.", reply_markup=get_cancel_keyboard(True))
                 return
             username = user[0]
             await conn.execute(
@@ -1341,30 +1347,24 @@ async def process_unban_user(message: types.Message, state: FSMContext):
             )
             await conn.commit()
         await message.answer(
-            MESSAGES["user_unbanned"].format(username=username or 'Unknown'),
+            MESSAGES["user_unbanned"].format(username=username),
             reply_markup=get_ban_restrict_keyboard()
         )
-        await log_action(
-            "unban_user",
-            user_id,
-            None,
-            f"Снят бан с пользователя @{username or 'Unknown'}"
-        )
-        await safe_send_message(telegram_id, "🔒 Ваш бан снят!")
+        await log_action("unban_user", user_id, None, f"Снят бан с пользователя @{username} (ID: {telegram_id})")
+        await safe_send_message(telegram_id, "🔒 Ваш бан снят. Вы снова можете использовать бота.")
         await state.clear()
     except ValueError:
-        logger.error(f"Ошибка преобразования ID в process_unban_user для {user_id}: Неверный формат\n{traceback.format_exc()}")
         await message.answer("⚠️ Неверный формат Telegram ID.", reply_markup=get_cancel_keyboard(True))
-        await state.clear()
     except aiosqlite.Error as e:
         logger.error(f"Ошибка базы данных в process_unban_user для {user_id}: {e}\n{traceback.format_exc()}")
-        await message.answer("⚠️ Ошибка базы данных при снятии бана.", reply_markup=get_ban_restrict_keyboard())
+        await message.answer("⚠️ Ошибка базы данных.", reply_markup=get_ban_restrict_keyboard())
         await state.clear()
     except TelegramAPIError as e:
         logger.error(f"Ошибка Telegram API в process_unban_user для {user_id}: {e}\n{traceback.format_exc()}")
         await message.answer(MESSAGES["error"], reply_markup=get_ban_restrict_keyboard())
         await state.clear()
 
+# Обработчик снятия ограничения
 @dp.message(Text("🔓 Снять ограничение"))
 async def unrestrict_user(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
@@ -1395,8 +1395,7 @@ async def process_unrestrict_user(message: types.Message, state: FSMContext):
             cursor = await conn.execute("SELECT username FROM escorts WHERE telegram_id = ?", (telegram_id,))
             user = await cursor.fetchone()
             if not user:
-                await message.answer(f"⚠️ Пользователь с ID {telegram_id} не найден.", reply_markup=get_ban_restrict_keyboard())
-                await state.clear()
+                await message.answer(f"⚠️ Пользователь с Telegram ID {telegram_id} не найден.", reply_markup=get_cancel_keyboard(True))
                 return
             username = user[0]
             await conn.execute(
@@ -1405,133 +1404,98 @@ async def process_unrestrict_user(message: types.Message, state: FSMContext):
             )
             await conn.commit()
         await message.answer(
-            MESSAGES["user_unrestricted"].format(username=username or 'Unknown'),
+            MESSAGES["user_unrestricted"].format(username=username),
             reply_markup=get_ban_restrict_keyboard()
         )
-        await log_action(
-            "unrestrict_user",
-            user_id,
-            None,
-            f"Снято ограничение с пользователя @{username or 'Unknown'}"
-        )
-        await safe_send_message(telegram_id, "🔓 Ваше ограничение снято!")
+        await log_action("unrestrict_user", user_id, None, f"Снято ограничение с пользователя @{username} (ID: {telegram_id})")
+        await safe_send_message(telegram_id, "🔓 Ограничения с вас сняты. Вы снова можете использовать бота.")
         await state.clear()
     except ValueError:
-        logger.error(f"Ошибка преобразования ID в process_unrestrict_user для {user_id}: Неверный формат\n{traceback.format_exc()}")
         await message.answer("⚠️ Неверный формат Telegram ID.", reply_markup=get_cancel_keyboard(True))
-        await state.clear()
     except aiosqlite.Error as e:
         logger.error(f"Ошибка базы данных в process_unrestrict_user для {user_id}: {e}\n{traceback.format_exc()}")
-        await message.answer("⚠️ Ошибка базы данных при снятии ограничения.", reply_markup=get_ban_restrict_keyboard())
+        await message.answer("⚠️ Ошибка базы данных.", reply_markup=get_ban_restrict_keyboard())
         await state.clear()
     except TelegramAPIError as e:
         logger.error(f"Ошибка Telegram API в process_unrestrict_user для {user_id}: {e}\n{traceback.format_exc()}")
         await message.answer(MESSAGES["error"], reply_markup=get_ban_restrict_keyboard())
         await state.clear()
 
-@dp.message(Text("👥 Пользователи"))
-async def list_users(message: types.Message):
+# Обработчик балансов сопровождающих
+@dp.message(Text("💰 Балансы сопровождающих"))
+async def list_balances(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     if not is_admin(user_id):
         await message.answer(MESSAGES["no_access"], reply_markup=get_menu_keyboard(user_id))
         return
     try:
         async with aiosqlite.connect(DB_PATH) as conn:
-            cursor = await conn.execute(
-                '''
-                SELECT telegram_id, username, pubg_id, squad_id, balance, reputation, completed_orders,
-                       rating, rating_count, is_banned, ban_until, restrict_until
-                FROM escorts
-                '''
-            )
-            users = await cursor.fetchall()
-        if not users:
-            await message.answer("⚠️ Нет зарегистрированных пользователей.", reply_markup=get_escorts_keyboard())
+            cursor = await conn.execute("SELECT telegram_id, username, balance FROM escorts")
+            escorts = await cursor.fetchall()
+        if not escorts:
+            await message.answer(MESSAGES["no_escorts"], reply_markup=get_balances_keyboard())
             return
-        response = "👥 Список пользователей:\n"
-        for user in users:
-            telegram_id, username, pubg_id, squad_id, balance, reputation, completed_orders, rating, rating_count, is_banned, ban_until, restrict_until = user
-            avg_rating = rating / rating_count if rating_count > 0 else 0
-            squad_name = "Не назначен"
-            if squad_id:
-                async with aiosqlite.connect(DB_PATH) as conn:
-                    cursor = await conn.execute("SELECT name FROM squads WHERE id = ?", (squad_id,))
-                    squad = await cursor.fetchone()
-                    squad_name = squad[0] if squad else "Неизвестно"
-            status = "Активен"
-            if is_banned:
-                if ban_until:
-                    formatted_date = datetime.fromisoformat(ban_until).strftime("%d.%m.%Y %H:%M")
-                    status = f"Забанен до {formatted_date}"
-                else:
-                    status = "Забанен навсегда"
-            elif restrict_until and datetime.fromisoformat(restrict_until) > datetime.now():
-                formatted_date = datetime.fromisoformat(restrict_until).strftime("%d.%m.%Y %H:%M")
-                status = f"Ограничен до {formatted_date}"
-            response += (
-                f"🔹 @{username or 'Unknown'} (ID: {telegram_id})\n"
-                f"🔢 PUBG ID: {pubg_id or 'не указан'}\n"
-                f"🏠 Сквад: {squad_name}\n"
-                f"💰 Баланс: {balance:.2f} руб.\n"
-                f"⭐ Репутация: {reputation}\n"
-                f"📋 Заказов: {completed_orders}\n"
-                f"🌟 Рейтинг: {avg_rating:.2f} ⭐ ({rating_count} оценок)\n"
-                f"🚫 Статус: {status}\n\n"
-            )
-        await message.answer(response, reply_markup=get_escorts_keyboard())
+        response = "💰 Балансы сопровождающих:\n"
+        for telegram_id, username, balance in escorts:
+            response += f"👤 @{username} (ID: {telegram_id}): {balance:.2f} руб.\n"
+        await message.answer(response, reply_markup=get_balances_keyboard())
     except aiosqlite.Error as e:
-        logger.error(f"Ошибка базы данных в list_users для {user_id}: {e}\n{traceback.format_exc()}")
-        await message.answer("⚠️ Ошибка базы данных при получении списка пользователей.", reply_markup=get_escorts_keyboard())
+        logger.error(f"Ошибка базы данных в list_balances для {user_id}: {e}\n{traceback.format_exc()}")
+        await message.answer("⚠️ Ошибка базы данных.", reply_markup=get_balances_keyboard())
     except TelegramAPIError as e:
-        logger.error(f"Ошибка Telegram API в list_users для {user_id}: {e}\n{traceback.format_exc()}")
-        await message.answer(MESSAGES["error"], reply_markup=get_escorts_keyboard())
+        logger.error(f"Ошибка Telegram API в list_balances для {user_id}: {e}\n{traceback.format_exc()}")
+        await message.answer(MESSAGES["error"], reply_markup=get_balances_keyboard())
 
+# Обработчик отчета за месяц
 @dp.message(Text("📈 Отчет за месяц"))
-async def monthly_report(message: types.Message):
+async def monthly_report(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     if not is_admin(user_id):
         await message.answer(MESSAGES["no_access"], reply_markup=get_menu_keyboard(user_id))
         return
     try:
-        thirty_days_ago = (datetime.now() - timedelta(days=30)).isoformat()
+        start_date = (datetime.now() - timedelta(days=30)).isoformat()
         async with aiosqlite.connect(DB_PATH) as conn:
             cursor = await conn.execute(
                 '''
                 SELECT COUNT(*) as order_count, SUM(amount) as total_amount
                 FROM orders
                 WHERE created_at >= ?
-                ''', (thirty_days_ago,)
+                ''',
+                (start_date,)
             )
-            orders_data = await cursor.fetchone()
+            result = await cursor.fetchone()
+            order_count, total_amount = result
             cursor = await conn.execute(
                 '''
                 SELECT COUNT(*) as payout_count, SUM(amount) as total_payout
                 FROM payouts
                 WHERE payout_date >= ?
-                ''', (thirty_days_ago,)
+                ''',
+                (start_date,)
             )
-            payouts_data = await cursor.fetchone()
-        order_count, total_amount = orders_data
-        payout_count, total_payout = payouts_data
+            payout_result = await cursor.fetchone()
+            payout_count, total_payout = payout_result
         total_amount = total_amount or 0
         total_payout = total_payout or 0
         response = (
-            "📈 Отчет за последние 30 дней:\n"
+            f"📈 Отчет за последние 30 дней:\n"
             f"📝 Заказов: {order_count}\n"
-            f"💰 Общая сумма заказов: {total_amount:.2f} руб.\n"
+            f"💰 Сумма заказов: {total_amount:.2f} руб.\n"
             f"💸 Выплат: {payout_count}\n"
-            f"💵 Общая сумма выплат: {total_payout:.2f} руб.\n"
+            f"💰 Сумма выплат: {total_payout:.2f} руб.\n"
         )
         await message.answer(response, reply_markup=get_reports_keyboard())
     except aiosqlite.Error as e:
         logger.error(f"Ошибка базы данных в monthly_report для {user_id}: {e}\n{traceback.format_exc()}")
-        await message.answer("⚠️ Ошибка базы данных при формировании отчета.", reply_markup=get_reports_keyboard())
+        await message.answer("⚠️ Ошибка базы данных.", reply_markup=get_reports_keyboard())
     except TelegramAPIError as e:
         logger.error(f"Ошибка Telegram API в monthly_report для {user_id}: {e}\n{traceback.format_exc()}")
         await message.answer(MESSAGES["error"], reply_markup=get_reports_keyboard())
 
+# Обработчик экспорта данных
 @dp.message(Text("📤 Экспорт данных"))
-async def export_data(message: types.Message):
+async def export_data(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     if not is_admin(user_id):
         await message.answer(MESSAGES["no_access"], reply_markup=get_menu_keyboard(user_id))
@@ -1541,19 +1505,23 @@ async def export_data(message: types.Message):
         if not filename:
             await message.answer(MESSAGES["no_data_to_export"], reply_markup=get_reports_keyboard())
             return
-        file = FSInputFile(filename)
-        await message.answer_document(file, caption=MESSAGES["export_success"].format(filename=filename), reply_markup=get_reports_keyboard())
+        await message.answer(
+            MESSAGES["export_success"].format(filename=filename),
+            reply_markup=get_reports_keyboard()
+        )
+        await bot.send_document(user_id, FSInputFile(filename))
         await log_action("export_data", user_id, None, f"Экспортированы данные в {filename}")
-        os.remove(filename)  # Удаляем файл после отправки
+        os.remove(filename)  # Удаление файла после отправки
     except (aiosqlite.Error, OSError) as e:
-        logger.error(f"Ошибка экспорта данных в export_data для {user_id}: {e}\n{traceback.format_exc()}")
-        await message.answer("⚠️ Ошибка при экспорте данных.", reply_markup=get_reports_keyboard())
+        logger.error(f"Ошибка экспорта данных для {user_id}: {e}\n{traceback.format_exc()}")
+        await message.answer("⚠️ Ошибка экспорта данных.", reply_markup=get_reports_keyboard())
     except TelegramAPIError as e:
         logger.error(f"Ошибка Telegram API в export_data для {user_id}: {e}\n{traceback.format_exc()}")
         await message.answer(MESSAGES["error"], reply_markup=get_reports_keyboard())
 
+# Обработчик журнала действий
 @dp.message(Text("📜 Журнал действий"))
-async def action_log(message: types.Message):
+async def action_log(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     if not is_admin(user_id):
         await message.answer(MESSAGES["no_access"], reply_markup=get_menu_keyboard(user_id))
@@ -1585,11 +1553,12 @@ async def action_log(message: types.Message):
         await message.answer(response, reply_markup=get_reports_keyboard())
     except aiosqlite.Error as e:
         logger.error(f"Ошибка базы данных в action_log для {user_id}: {e}\n{traceback.format_exc()}")
-        await message.answer("⚠️ Ошибка базы данных при получении журнала действий.", reply_markup=get_reports_keyboard())
+        await message.answer("⚠️ Ошибка базы данных.", reply_markup=get_reports_keyboard())
     except TelegramAPIError as e:
         logger.error(f"Ошибка Telegram API в action_log для {user_id}: {e}\n{traceback.format_exc()}")
         await message.answer(MESSAGES["error"], reply_markup=get_reports_keyboard())
 
+# Обработчик дохода пользователя
 @dp.message(Text("📈 Доход пользователя"))
 async def user_profit(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
@@ -1598,7 +1567,7 @@ async def user_profit(message: types.Message, state: FSMContext):
         return
     try:
         await message.answer(
-            "📈 Введите Telegram ID пользователя для просмотра дохода:",
+            "📈 Введите Telegram ID пользователя для получения отчета о доходе:",
             reply_markup=get_cancel_keyboard(True)
         )
         await state.set_state(Form.profit_user)
@@ -1623,45 +1592,42 @@ async def process_user_profit(message: types.Message, state: FSMContext):
             )
             user = await cursor.fetchone()
             if not user:
-                await message.answer(f"⚠️ Пользователь с ID {telegram_id} не найден.", reply_markup=get_reports_keyboard())
-                await state.clear()
+                await message.answer(f"⚠️ Пользователь с Telegram ID {telegram_id} не найден.", reply_markup=get_cancel_keyboard(True))
                 return
             username, balance, completed_orders = user
             cursor = await conn.execute(
                 '''
-                SELECT SUM(amount) as total_payout
-                FROM payouts
+                SELECT SUM(amount) as total_earned, COUNT(*) as order_count
+                FROM orders
                 WHERE escort_id = (SELECT id FROM escorts WHERE telegram_id = ?)
-                ''', (telegram_id,)
+                AND status = 'completed'
+                ''',
+                (telegram_id,)
             )
-            total_payout = (await cursor.fetchone())[0] or 0
+            result = await cursor.fetchone()
+            total_earned, order_count = result
+            total_earned = total_earned or 0
         response = (
-            f"📈 Доход пользователя @{username or 'Unknown'} (ID: {telegram_id}):\n"
-            f"💰 Текущий баланс: {balance:.2f} руб.\n"
-            f"📋 Завершенных заказов: {completed_orders}\n"
-            f"💸 Всего выплачено: {total_payout:.2f} руб.\n"
+            f"📈 Доход пользователя @{username} (ID: {telegram_id}):\n"
+            f"📝 Завершенных заказов: {order_count}\n"
+            f"💰 Общий доход: {total_earned:.2f} руб.\n"
+            f"💸 Текущий баланс: {balance:.2f} руб.\n"
         )
         await message.answer(response, reply_markup=get_reports_keyboard())
-        await log_action(
-            "view_user_profit",
-            user_id,
-            None,
-            f"Просмотрен доход пользователя @{username or 'Unknown'} (ID: {telegram_id})"
-        )
+        await log_action("user_profit", user_id, None, f"Запрошен отчет о доходе для @{username} (ID: {telegram_id})")
         await state.clear()
     except ValueError:
-        logger.error(f"Ошибка преобразования ID в process_user_profit для {user_id}: Неверный формат\n{traceback.format_exc()}")
         await message.answer("⚠️ Неверный формат Telegram ID.", reply_markup=get_cancel_keyboard(True))
-        await state.clear()
     except aiosqlite.Error as e:
         logger.error(f"Ошибка базы данных в process_user_profit для {user_id}: {e}\n{traceback.format_exc()}")
-        await message.answer("⚠️ Ошибка базы данных при получении дохода.", reply_markup=get_reports_keyboard())
+        await message.answer("⚠️ Ошибка базы данных.", reply_markup=get_reports_keyboard())
         await state.clear()
     except TelegramAPIError as e:
         logger.error(f"Ошибка Telegram API в process_user_profit для {user_id}: {e}\n{traceback.format_exc()}")
         await message.answer(MESSAGES["error"], reply_markup=get_reports_keyboard())
         await state.clear()
 
+# Обработчик поддержки
 @dp.message(Text("📩 Поддержка"))
 async def support_request(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
@@ -1682,11 +1648,11 @@ async def process_support_message(message: types.Message, state: FSMContext):
         await message.answer(MESSAGES["cancel_action"], reply_markup=get_menu_keyboard(user_id))
         await state.clear()
         return
+    support_text = message.text.strip()
+    if not support_text:
+        await message.answer("⚠️ Запрос не может быть пустым.", reply_markup=get_cancel_keyboard())
+        return
     try:
-        support_text = message.text.strip()
-        if not support_text:
-            await message.answer("⚠️ Запрос не может быть пустым.", reply_markup=get_cancel_keyboard())
-            return
         async with aiosqlite.connect(DB_PATH) as conn:
             cursor = await conn.execute("SELECT username FROM escorts WHERE telegram_id = ?", (user_id,))
             user = await cursor.fetchone()
@@ -1696,22 +1662,49 @@ async def process_support_message(message: types.Message, state: FSMContext):
             reply_to_user_id=user_id
         )
         await message.answer(MESSAGES["support_sent"], reply_markup=get_menu_keyboard(user_id))
-        await log_action(
-            "support_request",
-            user_id,
-            None,
-            f"Отправлен запрос в поддержку: {support_text}"
-        )
+        await log_action("support_request", user_id, None, f"Запрос в поддержку: {support_text}")
         await state.clear()
     except aiosqlite.Error as e:
         logger.error(f"Ошибка базы данных в process_support_message для {user_id}: {e}\n{traceback.format_exc()}")
-        await message.answer("⚠️ Ошибка базы данных при отправке запроса.", reply_markup=get_menu_keyboard(user_id))
+        await message.answer("⚠️ Ошибка базы данных.", reply_markup=get_menu_keyboard(user_id))
         await state.clear()
     except TelegramAPIError as e:
         logger.error(f"Ошибка Telegram API в process_support_message для {user_id}: {e}\n{traceback.format_exc()}")
         await message.answer(MESSAGES["error"], reply_markup=get_menu_keyboard(user_id))
         await state.clear()
 
+# Обработчик команды /my_orders
+@dp.message(Command("my_orders"))
+async def my_orders(message: types.Message):
+    user_id = message.from_user.id
+    if not await check_access(message):
+        return
+    try:
+        async with aiosqlite.connect(DB_PATH) as conn:
+            cursor = await conn.execute(
+                '''
+                SELECT memo_order_id, customer_info, amount, status
+                FROM orders
+                WHERE escort_id = (SELECT id FROM escorts WHERE telegram_id = ?)
+                ''',
+                (user_id,)
+            )
+            orders = await cursor.fetchall()
+        if not orders:
+            await message.answer(MESSAGES["no_active_orders"], reply_markup=get_menu_keyboard(user_id))
+            return
+        response = "📝 Ваши заказы:\n"
+        for order_id, customer, amount, status in orders:
+            response += f"Заказ #{order_id}: {customer}, {amount:.2f} руб., Статус: {status}\n"
+        await message.answer(response, reply_markup=get_menu_keyboard(user_id))
+    except aiosqlite.Error as e:
+        logger.error(f"Ошибка базы данных в my_orders для {user_id}: {e}\n{traceback.format_exc()}")
+        await message.answer("⚠️ Ошибка базы данных.", reply_markup=get_menu_keyboard(user_id))
+    except TelegramAPIError as e:
+        logger.error(f"Ошибка Telegram API в my_orders для {user_id}: {e}\n{traceback.format_exc()}")
+        await message.answer(MESSAGES["error"], reply_markup=get_menu_keyboard(user_id))
+
+# Обработчик возврата назад
 @dp.message(Text("🔙 Назад"))
 async def go_back(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
@@ -1723,32 +1716,16 @@ async def go_back(message: types.Message, state: FSMContext):
         await message.answer(MESSAGES["error"], reply_markup=get_menu_keyboard(user_id))
         await state.clear()
 
-# Обработчик неизвестных команд
-@dp.message()
-async def unknown_command(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
-    if not await check_access(message):
-        return
+# Запуск бота
+async def main():
     try:
-        await message.answer("⚠️ Неизвестная команда. Выберите действие из меню.", reply_markup=get_menu_keyboard(user_id))
-        await state.clear()
-    except TelegramAPIError as e:
-        logger.error(f"Ошибка Telegram API в unknown_command для {user_id}: {e}\n{traceback.format_exc()}")
-        await message.answer(MESSAGES["error"], reply_markup=get_menu_keyboard(user_id))
-        await state.clear()
-
-async def on_startup():
-    await init_db()
-    scheduler.add_job(check_pending_orders, 'interval', hours=24)
-    scheduler.start()
-    logger.info("Бот запущен")
-
-async def on_shutdown():
-    scheduler.shutdown()
-    await bot.session.close()
-    logger.info("Бот остановлен")
+        await init_db()
+        scheduler.add_job(check_pending_orders, "interval", hours=24)
+        scheduler.start()
+        await dp.start_polling(bot)
+    except Exception as e:
+        logger.error(f"Ошибка при запуске бота: {e}\n{traceback.format_exc()}")
+        raise
 
 if __name__ == "__main__":
-    dp.startup.register(on_startup)
-    dp.shutdown.register(on_shutdown)
-    asyncio.run(dp.start_polling(bot))
+    asyncio.run(main())
