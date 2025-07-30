@@ -6,7 +6,7 @@ import traceback
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.filters.text import Text  # Правильный импорт для aiogram 3.x
+from aiogram.filters import Text  # Исправленный импорт для aiogram 3.x
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton
@@ -15,6 +15,11 @@ from aiogram.exceptions import TelegramAPIError, RetryAfter
 from dotenv import load_dotenv
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import csv
+import aiogram  # Для проверки версии
+
+# Проверка версии aiogram
+if aiogram.__version__ != "3.11.0":
+    raise ImportError(f"Требуется aiogram версии 3.11.0, установлена версия {aiogram.__version__}")
 
 # Настройка логирования
 logging.basicConfig(
@@ -23,6 +28,12 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger()
+
+# Ротация логов
+from logging.handlers import RotatingFileHandler
+handler = RotatingFileHandler("memo_bot.log", maxBytes=10*1024*1024, backupCount=5)
+handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+logger.addHandler(handler)
 
 # Загрузка конфигурации
 load_dotenv()
@@ -88,73 +99,20 @@ MESSAGES = {
 async def init_db():
     try:
         async with aiosqlite.connect(DB_PATH) as conn:
-            await conn.execute("PRAGMA foreign_keys = ON;")  # Включение foreign keys
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS squads (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT UNIQUE NOT NULL,
-                    total_orders INTEGER DEFAULT 0,
-                    total_balance REAL DEFAULT 0,
-                    rating REAL DEFAULT 0,
-                    rating_count INTEGER DEFAULT 0
-                )
-            ''')
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS escorts (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    telegram_id INTEGER UNIQUE NOT NULL,
-                    username TEXT,
-                    pubg_id TEXT,
-                    squad_id INTEGER,
-                    balance REAL DEFAULT 0,
-                    reputation INTEGER DEFAULT 0,
-                    completed_orders INTEGER DEFAULT 0,
-                    rating REAL DEFAULT 0,
-                    rating_count INTEGER DEFAULT 0,
-                    is_banned INTEGER DEFAULT 0,
-                    ban_until TEXT,
-                    restrict_until TEXT,
-                    rules_accepted INTEGER DEFAULT 0,
-                    FOREIGN KEY (squad_id) REFERENCES squads(id)
-                )
-            ''')
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS orders (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    memo_order_id TEXT UNIQUE NOT NULL,
-                    customer_info TEXT,
-                    amount REAL NOT NULL,
-                    status TEXT DEFAULT 'pending',
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                    commission_amount REAL DEFAULT 0,
-                    escort_id INTEGER,
-                    FOREIGN KEY (escort_id) REFERENCES escorts(id)
-                )
-            ''')
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS action_log (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    action_type TEXT NOT NULL,
-                    user_id INTEGER,
-                    order_id TEXT,
-                    description TEXT,
-                    action_date TEXT DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS payouts (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    escort_id INTEGER,
-                    amount REAL NOT NULL,
-                    payout_date TEXT DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (escort_id) REFERENCES escorts(id)
-                )
-            ''')
+            # Включение foreign keys
+            await conn.execute("PRAGMA foreign_keys = ON;")
+            # Чтение и выполнение schema.sql
+            with open("schema.sql", "r", encoding="utf-8") as f:
+                sql_script = f.read()
+            await conn.executescript(sql_script)
             await conn.commit()
-        logger.info("База данных успешно инициализирована")
+        logger.info("База данных успешно инициализирована из schema.sql")
     except aiosqlite.Error as e:
         logger.error(f"Ошибка инициализации базы данных: {e}\n{traceback.format_exc()}")
         raise
+    except FileNotFoundError:
+        logger.error("Ошибка: файл schema.sql не найден")
+        raise FileNotFoundError("Файл schema.sql не найден")
 
 # Проверка доступа
 async def check_access(message: types.Message) -> bool:
