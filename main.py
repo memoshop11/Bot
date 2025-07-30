@@ -5,7 +5,8 @@ import aiosqlite
 import traceback
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command, Text
+from aiogram.filters import Command
+from aiogram.filters.text import Text  # Обновленный импорт для aiogram 3.x
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton
